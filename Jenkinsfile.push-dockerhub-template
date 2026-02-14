@@ -1,0 +1,112 @@
+pipeline {
+    agent any
+    
+    environment {
+        // DockerHub credentials
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-creds')
+        DOCKERHUB_USERNAME = 'mostakimidlc'
+        IMAGE_NAME = 'IMAGE_NAME'
+        
+        // Image tags
+        BUILD_TAG = "build-${env.BUILD_NUMBER}"
+        LATEST_TAG = 'latest'
+        FULL_IMAGE_NAME = "${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
+        
+        // Local code location
+        LOCAL_CODE_PATH = '/home/mostakim/projects/PROJECT_DIR'
+    }
+    
+    stages {
+        stage('📋 Info') {
+            steps {
+                echo '========================================='
+                echo 'Building Docker Image from LOCAL code'
+                echo '========================================='
+                sh '''
+                    echo "Source: ${LOCAL_CODE_PATH}"
+                    echo "Target: ${FULL_IMAGE_NAME}"
+                    echo ""
+                    cd ${LOCAL_CODE_PATH}
+                    echo "Current branch: $(git branch --show-current)"
+                    echo "Latest commit: $(git log -1 --oneline)"
+                '''
+            }
+        }
+        
+        
+        stage('🔐 DockerHub Login') {
+            steps {
+                echo '========== Logging into DockerHub =========='
+                sh '''
+                    echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_USERNAME --password-stdin
+                    echo "✅ Logged in as: $DOCKERHUB_USERNAME"
+                '''
+            }
+        }
+        stage('🏷️ Tag Image') {
+            steps {
+                sh """
+                    echo "Tagging local image..."
+                    docker tag mostakim/IMAGE_NAME:latest ${FULL_IMAGE_NAME}:${BUILD_TAG}
+                    docker tag mostakim/IMAGE_NAME:latest ${FULL_IMAGE_NAME}:${LATEST_TAG}
+                """
+            }
+        }
+
+        stage('📤 Push to DockerHub') {
+            steps {
+                echo '========== Pushing to DockerHub =========='
+                sh """
+                    echo "Pushing: ${FULL_IMAGE_NAME}:${BUILD_TAG}"
+                    docker push ${FULL_IMAGE_NAME}:${BUILD_TAG}
+                    
+                    echo "Pushing: ${FULL_IMAGE_NAME}:${LATEST_TAG}"
+                    docker push ${FULL_IMAGE_NAME}:${LATEST_TAG}
+                    
+                    echo ""
+                    echo "✅ Push complete!"
+                """
+            }
+        }
+        
+        stage('✅ Success') {
+            steps {
+                echo ''
+                echo '╔════════════════════════════════════════════════════════╗'
+                echo '║           DOCKER IMAGE PUBLISHED! 🎉                   ║'
+                echo '╚════════════════════════════════════════════════════════╝'
+                sh """
+                    echo ""
+                    echo "📦 Images published:"
+                    echo "   • ${FULL_IMAGE_NAME}:${BUILD_TAG}"
+                    echo "   • ${FULL_IMAGE_NAME}:${LATEST_TAG}"
+                    echo ""
+                    echo "🔗 DockerHub:"
+                    echo "   https://hub.docker.com/r/${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
+                    echo ""
+                    echo "🐳 Pull command:"
+                    echo "   docker pull ${FULL_IMAGE_NAME}:latest"
+                    echo ""
+                    echo "☸️  Ready for Kubernetes deployment!"
+                    echo ""
+                """
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                sh 'docker logout || true'
+            }
+        }
+        
+        success {
+            echo '✅ Pipeline completed successfully!'
+        }
+        
+        failure {
+            echo '❌ Pipeline failed - check logs above'
+        }
+    }
+}

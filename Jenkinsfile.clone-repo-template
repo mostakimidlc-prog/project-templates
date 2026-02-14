@@ -1,0 +1,26 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('Clone Repository') {
+            steps {
+                script {
+                    sh '''
+                        echo "Creating project directory if not exists..."
+                        mkdir -p /home/mostakim/projects
+
+                        echo "Cloning repository..."
+                        if [ -d "/home/mostakim/projects/CHANGE_WITH_Project" ]; then
+                            echo "Repository already exists. Pulling latest changes..."
+                            cd /home/mostakim/projects/CHANGE_WITH_Project
+                            git pull
+                        else
+                            git clone https://github.com/mostakimidlc-prog/CHANGE_WITH_Project.git /home/mostakim/projects/CHANGE_WITH_Project
+                        fi
+                    '''
+                }
+            }
+        }
+    }
+}
+
