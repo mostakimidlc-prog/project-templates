@@ -1,0 +1,73 @@
+pipeline {
+    agent any
+
+    environment {
+        PROJECT_DIR = "/home/mostakim/projects/glpi"
+        IMAGE_NAME  = "mostakim/glpi"
+        IMAGE_TAG   = "latest"
+        PLATFORM    = "linux/amd64"
+        PROXY_URL   = "http://172.19.16.1:8080"
+    }
+
+    stages {
+        stage('Verify Docker & Buildx') {
+            steps {
+                sh 'docker version && docker buildx version'
+            }
+        }
+
+        stage('Prepare Buildx Builder') {
+            steps {
+                sh """
+                    # 1. Force clean any existing builder
+                    docker buildx rm mybuilder || true
+                    
+                    # 2. Create builder WITHOUT commas in the driver-opt
+                    # We only set the main proxy and the specific local IP
+                    docker buildx create --name mybuilder \\
+                        --driver docker-container \\
+                        --driver-opt env.http_proxy=${PROXY_URL} \\
+                        --driver-opt env.https_proxy=${PROXY_URL} \\
+                        --driver-opt env.no_proxy=172.19.16.1 \\
+                        --use
+                        
+                    # 3. Start the builder daemon
+                    docker buildx inspect --bootstrap
+                """
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                withEnv([
+                    "http_proxy=${PROXY_URL}",
+                    "https_proxy=${PROXY_URL}",
+                    "no_proxy=localhost,127.0.0.1,172.19.16.1"
+                ]) {
+                    sh """
+                        cd ${PROJECT_DIR}
+                        # build-arg can handle commas easier than driver-opt
+                        docker buildx build \\
+                            --platform ${PLATFORM} \\
+                            --build-arg http_proxy=${PROXY_URL} \\
+                            --build-arg https_proxy=${PROXY_URL} \\
+                            --build-arg no_proxy=localhost,127.0.0.1,172.19.16.1 \\
+                            -t ${IMAGE_NAME}:${IMAGE_TAG} \\
+                            --load .
+                    """
+                }
+            }
+        }
+
+        stage('Verify Image') {
+            steps {
+                sh "docker images | grep ${IMAGE_NAME} || true"
+            }
+        }
+    }
+
+    post {
+        success { echo "Build Success!" }
+        failure { echo "Build failed. Check for timeout or Dockerfile syntax." }
+    }
+}
