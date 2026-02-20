@@ -1,23 +1,36 @@
 pipeline {
     agent any
 
+    environment {
+        // --- UPDATE THESE THREE VARIABLES FOR EACH PROJECT ---
+        PROJECT_NAME = "glpi"
+        REPO_URL     = "https://github.com/mostakimidlc-prog/glpi.git"
+        BASE_DIR     = "/home/mostakim/projects"
+        
+        // This combines them automatically for the script logic
+        TARGET_DIR   = "${BASE_DIR}/${PROJECT_NAME}"
+    }
+
     stages {
-        stage('Clone Repository') {
+        stage('Sync Repository') {
             steps {
                 script {
-                    sh '''
-                        echo "Creating project directory if not exists..."
-                        mkdir -p /home/mostakim/projects
+                    sh """
+                        echo "Target Directory: ${TARGET_DIR}"
+                        
+                        # Ensure the parent directory exists
+                        sudo mkdir -p ${BASE_DIR}
+                        sudo chown -R jenkins:jenkins ${BASE_DIR}
 
-                        echo "Cloning repository..."
-                        if [ -d "/home/mostakim/projects/glpi" ]; then
-                            echo "Repository already exists. Pulling latest changes..."
-                            cd /home/mostakim/projects/glpi
-                            git pull
+                        # Check if the .git folder exists to verify it's a valid repo
+                        if [ -d "${TARGET_DIR}/.git" ]; then
+                            echo "Updating existing repository in ${TARGET_DIR}..."
+                            cd ${TARGET_DIR} && git pull
                         else
-                            git clone https://github.com/mostakimidlc-prog/glpi.git /home/mostakim/projects/glpi
+                            echo "Cloning new repository from ${REPO_URL}..."
+                            git clone ${REPO_URL} ${TARGET_DIR}
                         fi
-                    '''
+                    """
                 }
             }
         }
