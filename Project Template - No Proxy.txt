@@ -1,0 +1,232 @@
+pipeline {
+    agent any
+
+    environment {
+        // --- UPDATE THESE THREE VARIABLES FOR EACH PROJECT ---
+        PROJECT_NAME = "microservices-demo"
+        REPO_URL     = "https://github.com/GoogleCloudPlatform/microservices-demo.git"
+        BASE_DIR     = "/home/mostakim/projects"
+        
+        // This combines them automatically for the script logic
+        TARGET_DIR   = "${BASE_DIR}/${PROJECT_NAME}"
+    }
+
+    stages {
+        stage('Sync Repository') {
+            steps {
+                script {
+                    sh """
+                        echo "Target Directory: ${TARGET_DIR}"
+                        
+                        # Ensure the parent directory exists
+                        sudo mkdir -p ${BASE_DIR}
+                        sudo chown -R jenkins:jenkins ${BASE_DIR}
+
+                        # Check if the .git folder exists to verify it's a valid repo
+                        if [ -d "${TARGET_DIR}/.git" ]; then
+                            echo "Updating existing repository in ${TARGET_DIR}..."
+                            cd ${TARGET_DIR} && git pull
+                        else
+                            echo "Cloning new repository from ${REPO_URL}..."
+                            git clone ${REPO_URL} ${TARGET_DIR}
+                        fi
+                    """
+                }
+            }
+        }
+    }
+}
+
+=======================
+
+pipeline {
+    agent any
+
+    environment {
+        // --- MANUAL UPDATES HERE ---
+        PROJECT_DIR = "/home/mostakim/projects/microservices-demo"
+        IMAGE_NAME  = "mostakim/microservices-demo"
+        IMAGE_TAG   = "latest"
+        PLATFORM    = "linux/amd64"
+    }
+
+    stages {
+        stage('Verify Docker') {
+            steps {
+                sh 'docker version && docker buildx version'
+            }
+        }
+
+        stage('Prepare Buildx') {
+            steps {
+                sh """
+                    # Create and switch to a dedicated builder
+                    docker buildx create --name mybuilder --use || docker buildx use mybuilder
+                    docker buildx inspect --bootstrap
+                """
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh """
+                    cd ${PROJECT_DIR}
+                    docker buildx build \
+                        --platform ${PLATFORM} \
+                        -t ${IMAGE_NAME}:${IMAGE_TAG} \
+                        --load .
+                """
+            }
+        }
+
+        stage('Verify Image') {
+            steps {
+                sh "docker images | grep ${IMAGE_NAME} || true"
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                echo "Cleaning up Buildx builder..."
+                // Stops and removes the 'mybuilder' instance to free up resources
+                sh "docker buildx rm mybuilder || true"
+            }
+        }
+        success { 
+            echo "Build for ${IMAGE_NAME} Completed Successfully!" 
+        }
+        failure { 
+            echo "Build failed. Check the Dockerfile in ${PROJECT_DIR}." 
+        }
+    }
+}
+
+=================
+
+pipeline {
+    agent any
+
+    environment {
+        // --- MANUAL UPDATES HERE ---
+        LOCAL_BUILD_IMAGE = "mostakim/uptime-kuma:latest" // The image name currently on your disk
+        REPO_NAME         = "uptime-kuma"
+        IMAGE_TAG         = "latest"
+        
+        // --- DOCKER HUB CONFIG ---
+        DOCKER_USER       = "mostakimidlc"
+        DOCKER_CREDS_ID   = "dockerhub-creds"
+        
+        // --- LOCAL REGISTRY CONFIG ---
+        LOCAL_REGISTRY    = "localhost:5000"
+        REGISTRY_DATA     = "/home/mostakim/docker-registry-data"
+        
+        // This is the "Correct" tag for Hub: mostakimidlc/uptime-kuma:latest
+        HUB_IMAGE_NAME    = "${DOCKER_USER}/${REPO_NAME}:${IMAGE_TAG}"
+    }
+
+    stages {
+        stage('Prepare Tags') {
+            steps {
+                echo "Retagging ${LOCAL_BUILD_IMAGE} to ${HUB_IMAGE_NAME}..."
+                sh "docker tag ${LOCAL_BUILD_IMAGE} ${HUB_IMAGE_NAME}"
+            }
+        }
+
+        stage('Ensure Local Registry') {
+            steps {
+                script {
+                    def containerExists = sh(script: "docker ps -a -q -f name=registry", returnStdout: true).trim()
+                    if (!containerExists) {
+                        sh "sudo mkdir -p ${REGISTRY_DATA}"
+                        sh "docker run -d -p 5000:5000 --restart=always --name registry -v ${REGISTRY_DATA}:/var/lib/registry registry:2"
+                    } else {
+                        sh "docker start registry || true"
+                    }
+                }
+            }
+        }
+
+        stage('Push to Local Registry') {
+            steps {
+                echo "Pushing to Local Registry..."
+                sh """
+                    docker tag ${HUB_IMAGE_NAME} ${LOCAL_REGISTRY}/${HUB_IMAGE_NAME}
+                    docker push ${LOCAL_REGISTRY}/${HUB_IMAGE_NAME}
+                """
+            }
+        }
+
+        /* // --- TO ENABLE DOCKER HUB, UNCOMMENT THIS SECTION ---
+        stage('Push to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDS_ID}", passwordVariable: 'DOCKER_PASS', usernameVariable: 'DOCKER_USER_ENV')]) {
+                    sh """
+                        echo \$DOCKER_PASS | docker login -u \$DOCKER_USER_ENV --password-stdin
+                        docker push ${HUB_IMAGE_NAME}
+                        docker logout
+                    """
+                }
+            }
+        }
+        */
+    }
+
+    post {
+        success {
+            echo "Successfully processed: ${HUB_IMAGE_NAME}"
+            sh "du -sh ${REGISTRY_DATA} || true"
+        }
+    }
+}
+
+===================
+
+pipeline {
+    agent any
+
+    environment {
+        // --- PREVENT PROXY INTERFERENCE (Universal Fix) ---
+        http_proxy  = ""
+        https_proxy = ""
+        no_proxy    = "localhost,127.0.0.1,kubernetes.default"
+
+        // --- PROJECT CONFIG ---
+        PROJECT_NAME = "uptime-kuma"
+        BASE_PROJECT_PATH = "/home/mostakim/projects"
+        STACK_FILE = "${BASE_PROJECT_PATH}/${PROJECT_NAME}/${PROJECT_NAME}-stack.yaml"
+        
+        // --- STORAGE PATHS ---
+        PVC_ROOT     = "${BASE_PROJECT_PATH}/pvc/${PROJECT_NAME}"
+        DB_DATA      = "${PVC_ROOT}/mysql-data"
+        APP_FILES    = "${PVC_ROOT}/files"
+        APP_CONFIG   = "${PVC_ROOT}/config"
+        APP_PLUGINS  = "${BASE_PROJECT_PATH}/${PROJECT_NAME}/plugins"
+        
+        KUBECONFIG   = "/var/lib/jenkins/.kube/config"
+    }
+
+    stages {
+        stage('Initialize Storage') {
+            steps {
+                sh """
+                    sudo mkdir -p ${DB_DATA} ${APP_FILES} ${APP_CONFIG} ${APP_PLUGINS}
+                    sudo chown -R 999:999 ${DB_DATA}
+                    sudo chown -R 33:33 ${APP_FILES} ${APP_CONFIG} ${APP_PLUGINS}
+                    sudo chmod -R 775 ${APP_FILES} ${APP_CONFIG} ${APP_PLUGINS}
+                """
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                // We use 'withEnv' to ensure the environment is absolutely clean
+                withEnv(["http_proxy=", "https_proxy="]) {
+                    sh "kubectl cluster-info"
+                    sh "kubectl apply -f ${STACK_FILE}"
+                }
+            }
+        }
+    }
+}
